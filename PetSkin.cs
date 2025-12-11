@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Text.Json.Nodes;
 
 namespace QuackDuck;
 
@@ -17,19 +18,19 @@ internal sealed class PetSkin : IDisposable
     private readonly Dictionary<string, Rectangle[]> animations;
     private bool disposed;
 
-    private PetSkin(Bitmap spriteSheet, int frameWidth, int frameHeight, Dictionary<string, Rectangle[]> animations, string? soundPath)
+    private PetSkin(Bitmap spriteSheet, int frameWidth, int frameHeight, Dictionary<string, Rectangle[]> animations, IReadOnlyList<string> soundPaths)
     {
         SpriteSheet = spriteSheet;
         FrameWidth = frameWidth;
         FrameHeight = frameHeight;
         this.animations = animations;
-        SoundPath = soundPath;
+        SoundPaths = soundPaths;
     }
 
     internal Bitmap SpriteSheet { get; }
     internal int FrameWidth { get; }
     internal int FrameHeight { get; }
-    internal string? SoundPath { get; }
+    internal IReadOnlyList<string> SoundPaths { get; }
 
     internal static PetSkin Load(string skinName = "default")
     {
@@ -49,9 +50,9 @@ internal sealed class PetSkin : IDisposable
 
         var spriteSheet = new Bitmap(sheetPath);
         var animations = BuildAnimations(config, spriteSheet.Width, spriteSheet.Height);
-        var soundPath = string.IsNullOrWhiteSpace(config.Sound) ? null : Path.Combine(skinFolder, config.Sound);
+        var soundPaths = BuildSoundPaths(config, skinFolder);
 
-        return new PetSkin(spriteSheet, config.FrameWidth, config.FrameHeight, animations, soundPath);
+        return new PetSkin(spriteSheet, config.FrameWidth, config.FrameHeight, animations, soundPaths);
     }
 
     internal bool HasAnimation(string name) => animations.ContainsKey(name);
@@ -102,6 +103,26 @@ internal sealed class PetSkin : IDisposable
         return animations;
     }
 
+    private static IReadOnlyList<string> BuildSoundPaths(SkinConfig config, string skinFolder)
+    {
+        var sounds = new List<string>();
+        foreach (var file in config.SoundFiles)
+        {
+            if (string.IsNullOrWhiteSpace(file))
+            {
+                continue;
+            }
+
+            var path = Path.Combine(skinFolder, file);
+            if (File.Exists(path))
+            {
+                sounds.Add(path);
+            }
+        }
+
+        return sounds;
+    }
+
     private static Rectangle ParseFrame(string token, int frameWidth, int frameHeight)
     {
         var parts = token.Split(':', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
@@ -146,6 +167,18 @@ internal sealed class PetSkin : IDisposable
             return devPath;
         }
 
+        var readyRuntime = Path.Combine(baseDir, "READY", skinName);
+        if (Directory.Exists(readyRuntime))
+        {
+            return readyRuntime;
+        }
+
+        var readyDev = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "READY", skinName));
+        if (Directory.Exists(readyDev))
+        {
+            return readyDev;
+        }
+
         throw new DirectoryNotFoundException($"Skin '{skinName}' was not found under assets/skins.");
     }
 
@@ -166,7 +199,7 @@ internal sealed class PetSkin : IDisposable
         public string Spritesheet { get; set; } = string.Empty;
 
         [JsonPropertyName("sound")]
-        public string? Sound { get; set; }
+        public JsonNode? Sound { get; set; }
 
         [JsonPropertyName("frame_width")]
         public int FrameWidth { get; set; }
@@ -176,6 +209,38 @@ internal sealed class PetSkin : IDisposable
 
         [JsonPropertyName("animations")]
         public Dictionary<string, string[]> Animations { get; set; } = new();
+
+        [JsonIgnore]
+        public IReadOnlyList<string> SoundFiles => ParseSound(Sound);
+
+        private static IReadOnlyList<string> ParseSound(JsonNode? node)
+        {
+            if (node is null)
+            {
+                return Array.Empty<string>();
+            }
+
+            if (node is JsonValue value && value.TryGetValue<string>(out var str))
+            {
+                return string.IsNullOrWhiteSpace(str) ? Array.Empty<string>() : new[] { str };
+            }
+
+            if (node is JsonArray arr)
+            {
+                var list = new List<string>();
+                foreach (var element in arr)
+                {
+                    if (element is JsonValue v && v.TryGetValue<string>(out var s) && !string.IsNullOrWhiteSpace(s))
+                    {
+                        list.Add(s);
+                    }
+                }
+
+                return list;
+            }
+
+            return Array.Empty<string>();
+        }
     }
 }
 
@@ -186,20 +251,24 @@ internal sealed class PetAnimator
 {
     private readonly PetSkin skin;
     private readonly Stopwatch stopwatch = Stopwatch.StartNew();
-    private readonly double frameDurationMs;
+    private readonly double baseFrameDurationMs;
     private string currentAnimation;
     private double lastSwitchTimestampMs;
     private int frameIndex;
+    private double speedMultiplier = 1d;
+    private bool looping = true;
+    private bool holdLastFrame;
+    private bool finishedOnce;
 
-    internal PetAnimator(PetSkin skin, double frameDurationMs = 120d)
+    internal PetAnimator(PetSkin skin, double frameDurationMs = 50d)
     {
         this.skin = skin;
-        this.frameDurationMs = frameDurationMs;
+        baseFrameDurationMs = frameDurationMs;
         currentAnimation = skin.ResolveAnimationName("idle");
         lastSwitchTimestampMs = stopwatch.Elapsed.TotalMilliseconds;
     }
 
-    internal void SetAnimation(string animationName, bool restartIfSame = false)
+    internal void SetAnimation(string animationName, bool restartIfSame = false, bool loop = true, bool holdOnLastFrame = false)
     {
         var resolved = skin.ResolveAnimationName(animationName);
         if (!restartIfSame && resolved == currentAnimation)
@@ -209,7 +278,15 @@ internal sealed class PetAnimator
 
         currentAnimation = resolved;
         frameIndex = 0;
+        finishedOnce = false;
+        looping = loop;
+        holdLastFrame = holdOnLastFrame;
         lastSwitchTimestampMs = stopwatch.Elapsed.TotalMilliseconds;
+    }
+
+    internal void SetSpeedMultiplier(double multiplier)
+    {
+        speedMultiplier = Math.Max(0.1d, multiplier);
     }
 
     internal void Update()
@@ -220,10 +297,33 @@ internal sealed class PetAnimator
             return;
         }
 
-        var elapsed = stopwatch.Elapsed.TotalMilliseconds;
-        if (elapsed - lastSwitchTimestampMs >= frameDurationMs)
+        if (!looping && finishedOnce && holdLastFrame)
         {
-            frameIndex = (frameIndex + 1) % frames.Length;
+            frameIndex = frames.Length - 1;
+            return;
+        }
+
+        var elapsed = stopwatch.Elapsed.TotalMilliseconds;
+        var effectiveFrameDuration = Math.Max(20d, baseFrameDurationMs / speedMultiplier);
+        if (elapsed - lastSwitchTimestampMs >= effectiveFrameDuration)
+        {
+            if (frameIndex >= frames.Length - 1)
+            {
+                finishedOnce = true;
+                if (looping)
+                {
+                    frameIndex = 0;
+                }
+                else if (!holdLastFrame)
+                {
+                    frameIndex = frames.Length - 1;
+                }
+            }
+            else
+            {
+                frameIndex = frameIndex + 1;
+            }
+
             lastSwitchTimestampMs = elapsed;
         }
     }

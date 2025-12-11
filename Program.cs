@@ -9,6 +9,7 @@ internal static class Program
     private static void Main()
     {
         ApplicationConfiguration.Initialize();
-        Application.Run(new PetForm());
+        var settings = AppSettings.Load();
+        Application.Run(new PetForm(settings, scale: 3));
     }
 }
