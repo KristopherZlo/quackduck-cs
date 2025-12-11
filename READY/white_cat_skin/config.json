@@ -1,0 +1,16 @@
+{
+    "spritesheet": "White_Cat_Sprite_Sheet.png",
+    "sound": "purr.wav",
+    "frame_width": 32,
+    "frame_height": 32,
+    "animations": {
+      "idle": ["0:0", "0:1", "0:2", "0:3", "0:4", "0:5"],
+      "walk": ["2:0", "2:1", "2:2", "2:3", "2:4"],
+      "listen": ["1:0", "1:1", "1:2", "1:3"],
+      "fall": ["4:0"],
+      "jump": ["2:0", "4:0"],
+      "sleep": ["3:1", "3:2", "3:3", "3:4", "3:5", "3:6"],
+      "sleep_transition": ["3:0"]
+    }
+  }
+  
