@@ -17,6 +17,7 @@ internal sealed class PetForm : Form
 
     // Timer controls the animation loop on the UI thread.
     private readonly System.Windows.Forms.Timer animationTimer;
+    private readonly int scale;
     private readonly Random random = new();
     private PetSkin skin = null!;
     private PetAnimator animator = null!;
@@ -32,8 +33,14 @@ internal sealed class PetForm : Form
     private bool facingRight = true;
 
     // Configure the transparent, borderless window and start ticking.
-    public PetForm()
+    public PetForm(int scale = 1)
     {
+        if (scale <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(scale), "Scale must be a positive integer.");
+        }
+
+        this.scale = scale;
         Text = "QuackDuck Pet";
         StartPosition = FormStartPosition.Manual;
         BackColor = Color.Magenta;
@@ -54,7 +61,7 @@ internal sealed class PetForm : Form
         {
             skin = PetSkin.Load();
             animator = new PetAnimator(skin);
-            ClientSize = new Size(skin.FrameWidth, skin.FrameHeight);
+            ClientSize = new Size(skin.FrameWidth * scale, skin.FrameHeight * scale);
 
             workingArea = Screen.FromControl(this).WorkingArea;
             screenX = workingArea.Left + (workingArea.Width - ClientSize.Width) / 2f;
@@ -271,7 +278,7 @@ internal sealed class PetForm : Form
             e.Graphics.ScaleTransform(-1, 1);
         }
 
-        var destination = new Rectangle(0, 0, skin.FrameWidth, skin.FrameHeight);
+        var destination = new Rectangle(0, 0, skin.FrameWidth * scale, skin.FrameHeight * scale);
         e.Graphics.DrawImage(skin.SpriteSheet, destination, source, GraphicsUnit.Pixel);
         e.Graphics.Restore(state);
     }
