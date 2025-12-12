@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
@@ -79,6 +80,12 @@ internal sealed partial class PetForm : Form
     private bool fallAnimationStarted;
     private MicrophoneListener? microphoneListener;
     private float lastMicLevel;
+    private bool lastTravelWasRunning;
+    private bool travelActive;
+    private int cursorHuntChancePercent;
+    private int randomSoundChancePercent;
+    private SettingsForm? settingsForm;
+    private bool isPausedHidden;
 
     // Configure the transparent, borderless window and start ticking.
     public PetForm(AppSettings settings, int scale = 1)
@@ -90,6 +97,8 @@ internal sealed partial class PetForm : Form
         }
 
         this.scale = scale;
+        cursorHuntChancePercent = settings.CursorHuntChancePercent;
+        randomSoundChancePercent = settings.RandomSoundChancePercent;
         if (settings.Debug)
         {
             debugState = new DebugState
@@ -108,6 +117,7 @@ internal sealed partial class PetForm : Form
         AllowTransparency = true;
         DoubleBuffered = true;
         TopMost = true;
+        KeyPreview = true;
 
         horizontalVelocity = 0;
         verticalVelocity = 0;
@@ -145,6 +155,8 @@ internal sealed partial class PetForm : Form
                 debugState.CurrentState = stateMachine.CurrentState;
                 debugState.AppendHistory(stateMachine.CurrentState);
             }
+
+            InitializeTrayIcon();
         };
 
         Resize += (_, _) =>
@@ -156,6 +168,7 @@ internal sealed partial class PetForm : Form
         MouseDown += OnMouseDown;
         MouseMove += OnMouseMove;
         MouseUp += OnMouseUp;
+        KeyDown += OnKeyDown;
     }
 
     // Drives movement each frame, applies gravity, and keeps the window within the screen bounds.
@@ -206,6 +219,31 @@ internal sealed partial class PetForm : Form
         Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] {message}");
     }
 
+    private void OpenSettings()
+    {
+        if (settingsForm is { IsDisposed: false })
+        {
+            settingsForm.Focus();
+            return;
+        }
+
+        var snapshot = new PetSettingsSnapshot
+        {
+            CursorHuntChancePercent = cursorHuntChancePercent,
+            RandomSoundChancePercent = randomSoundChancePercent
+        };
+
+        settingsForm = new SettingsForm(snapshot, ApplySettings);
+        settingsForm.Show(this);
+    }
+
+    private void ApplySettings(PetSettingsSnapshot snapshot)
+    {
+        cursorHuntChancePercent = Math.Clamp(snapshot.CursorHuntChancePercent, 0, 100);
+        randomSoundChancePercent = Math.Clamp(snapshot.RandomSoundChancePercent, 0, 100);
+        Log($"Settings updated: cursor hunt {cursorHuntChancePercent}%, random sound {randomSoundChancePercent}%");
+    }
+
     private void OnEnergyTick()
     {
         if (isSleeping)
@@ -226,6 +264,10 @@ internal sealed partial class PetForm : Form
             skin?.Dispose();
             microphoneListener?.Dispose();
             (soundPlayer as IDisposable)?.Dispose();
+            trayIcon?.Dispose();
+            trayMenu?.Dispose();
+            visibleIcon?.Dispose();
+            hiddenIcon?.Dispose();
         }
 
         base.Dispose(disposing);

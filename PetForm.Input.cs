@@ -85,4 +85,12 @@ internal sealed partial class PetForm
         Capture = false;
         UpdateFacingFromVelocity();
     }
+
+    private void OnKeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.KeyCode == Keys.F1)
+        {
+            OpenSettings();
+        }
+    }
 }

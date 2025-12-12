@@ -9,6 +9,7 @@ internal sealed partial class PetForm
     private PetStateMachine BuildStateMachine()
     {
         return PetStateMachineBuilder.Create()
+            .WithTransitionObserver(LogStateChange)
             .State("Idle")
                 .OnEnter(EnterIdle)
                 .OnUpdate(UpdateIdle)
@@ -26,6 +27,7 @@ internal sealed partial class PetForm
                 .OnUpdate(() => UpdateTravel(isRunning: false))
                 .When(() => isDragging).GoTo("Dragging")
                 .When(ShouldSleep).GoTo("SleepTransition")
+                .When(ShouldStartListening).GoTo("Listening")
                 .When(() => pendingJump).GoTo("Jumping")
                 .When(ReachedTarget).GoTo("Idle")
                 .When(() => !IsOnGround()).GoTo("Falling")
@@ -35,6 +37,7 @@ internal sealed partial class PetForm
                 .OnUpdate(() => UpdateTravel(isRunning: true))
                 .When(() => isDragging).GoTo("Dragging")
                 .When(ShouldSleep).GoTo("SleepTransition")
+                .When(ShouldStartListening).GoTo("Listening")
                 .When(() => pendingJump).GoTo("Jumping")
                 .When(ReachedTarget).GoTo("Idle")
                 .When(() => !IsOnGround()).GoTo("Falling")
@@ -112,7 +115,7 @@ internal sealed partial class PetForm
     private void EnterIdle()
     {
         isSleeping = false;
-        targetPoint ??= PickGroundTarget();
+        targetPoint = PickGroundTarget();
         SetIdleAnimationVariant();
         idleReleaseTime = DateTime.UtcNow + TimeSpan.FromMilliseconds(random.Next(1200, 3200));
         SnapToGround();
@@ -121,7 +124,6 @@ internal sealed partial class PetForm
         pendingJump = false;
         fallAnimationStarted = false;
         CheckRandomSounds();
-        Log("Enter Idle");
     }
 
     private void UpdateIdle()
@@ -140,10 +142,7 @@ internal sealed partial class PetForm
             return false;
         }
 
-        if (targetPoint is null)
-        {
-            targetPoint = PickGroundTarget();
-        }
+        targetPoint ??= PickGroundTarget();
 
         if (targetPoint is null)
         {
@@ -161,10 +160,7 @@ internal sealed partial class PetForm
             return false;
         }
 
-        if (targetPoint is null)
-        {
-            targetPoint = PickGroundTarget();
-        }
+        targetPoint ??= PickGroundTarget();
 
         if (targetPoint is null)
         {
@@ -183,6 +179,8 @@ internal sealed partial class PetForm
         animator.SetAnimation(animation, restartIfSame: true);
         var direction = Math.Sign((targetPoint?.X ?? screenX) - screenX);
         targetWalkSpeed = (GroundSpeedBase + (float)random.NextDouble() * GroundSpeedVariance) * (isRunning ? RunSpeedMultiplier : 1f) * DebugSpeedFactor * (direction == 0 ? 1 : direction);
+        lastTravelWasRunning = isRunning;
+        travelActive = true;
     }
 
     private void UpdateTravel(bool isRunning)
@@ -211,6 +209,8 @@ internal sealed partial class PetForm
                 SpendTravelEnergy(isRunning);
                 spentForTarget = true;
             }
+            travelActive = false;
+            targetPoint = null;
         }
     }
 
@@ -317,6 +317,7 @@ internal sealed partial class PetForm
     {
         targetPoint = null;
         spentForTarget = false;
+        travelActive = false;
         SnapToGround();
         verticalVelocity = 0;
         horizontalVelocity = 0;
@@ -333,11 +334,11 @@ internal sealed partial class PetForm
 
     private void EnterListening()
     {
-        Log("Enter Listening");
         animator.SetAnimation("listen", restartIfSame: true, loop: true);
         SnapToGround();
         fallAnimationStarted = false;
         listeningReleaseTime = DateTime.UtcNow;
+        CompleteTravelIfPending();
     }
 
     private void UpdateListening()
@@ -435,7 +436,7 @@ internal sealed partial class PetForm
         }
 
         nextCursorHuntCheck = DateTime.UtcNow + TimeSpan.FromMinutes(5);
-        var chance = settings.CursorHuntChancePercent;
+        var chance = cursorHuntChancePercent;
         var roll = random.Next(0, 100);
         if (roll < chance)
         {
@@ -595,9 +596,29 @@ internal sealed partial class PetForm
     {
         var minX = workingArea.Left;
         var maxX = workingArea.Right - ClientSize.Width;
-        var x = random.Next((int)minX, (int)maxX);
+        if (maxX - minX <= TargetReachedTolerance * 2)
+        {
+            return null;
+        }
+
+        const int maxAttempts = 5;
+        var attempt = 0;
+        while (attempt < maxAttempts)
+        {
+            var x = random.Next((int)minX, (int)maxX);
+            if (Math.Abs(x - screenX) > TargetReachedTolerance * 2)
+            {
+                spentForTarget = false;
+                return new PointF(x, GroundLevel);
+            }
+
+            attempt++;
+        }
+
+        var fallbackDirection = Math.Sign(random.NextDouble() - 0.5);
+        var fallbackX = Math.Clamp(screenX + fallbackDirection * TargetReachedTolerance * 3, minX, maxX);
         spentForTarget = false;
-        return new PointF(x, GroundLevel);
+        return new PointF(fallbackX, GroundLevel);
     }
 
     private void SetIdleAnimationVariant()
@@ -611,6 +632,19 @@ internal sealed partial class PetForm
         };
 
         animator.SetAnimation(name, restartIfSame: true);
+    }
+
+    private void CompleteTravelIfPending()
+    {
+        if (!travelActive || targetPoint is null || spentForTarget)
+        {
+            return;
+        }
+
+        SpendTravelEnergy(lastTravelWasRunning);
+        spentForTarget = true;
+        travelActive = false;
+        targetPoint = null;
     }
 
     private void SpendTravelEnergy(bool isRunning)
@@ -633,7 +667,7 @@ internal sealed partial class PetForm
         }
 
         nextRandomSoundCheck = DateTime.UtcNow + TimeSpan.FromMinutes(5);
-        if (random.Next(0, 100) >= settings.RandomSoundChancePercent)
+        if (random.Next(0, 100) >= randomSoundChancePercent)
         {
             return;
         }

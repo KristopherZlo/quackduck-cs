@@ -58,6 +58,7 @@ internal sealed partial class PetForm
             horizontalVelocity = 0;
             verticalVelocity = 0;
             spentForTarget = false;
+            travelActive = false;
             wakeRequested = false;
             pendingJump = false;
             energy.Restore(energy.Max);
@@ -106,5 +107,10 @@ internal sealed partial class PetForm
         debugState.CurrentX = screenX;
         debugState.CurrentY = screenY;
         debugState.MicrophoneLevel = lastMicLevel;
+    }
+
+    private void LogStateChange(string from, string to)
+    {
+        Log($"State: {from} -> {to}");
     }
 }

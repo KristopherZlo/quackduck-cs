@@ -9,13 +9,16 @@ namespace QuackDuck;
 internal sealed class PetStateMachine
 {
     private readonly Dictionary<string, PetState> states;
+    private readonly Action<string, string>? transitionObserver;
     private PetState current;
 
-    internal PetStateMachine(Dictionary<string, PetState> states, string initialState)
+    internal PetStateMachine(Dictionary<string, PetState> states, string initialState, Action<string, string>? transitionObserver = null)
     {
         this.states = states;
+        this.transitionObserver = transitionObserver;
         current = states[initialState];
         current.Enter();
+        transitionObserver?.Invoke("<init>", current.Name);
     }
 
     internal string CurrentState => current.Name;
@@ -47,9 +50,11 @@ internal sealed class PetStateMachine
             return;
         }
 
+        var previous = current.Name;
         current.Exit();
         current = next;
         current.Enter();
+        transitionObserver?.Invoke(previous, current.Name);
     }
 }
 
@@ -57,6 +62,7 @@ internal sealed class PetStateMachineBuilder
 {
     private readonly Dictionary<string, PetStateBuilder> states = new();
     private string? initialState;
+    private Action<string, string>? transitionObserver;
 
     private PetStateMachineBuilder()
     {
@@ -75,6 +81,12 @@ internal sealed class PetStateMachineBuilder
     internal PetStateMachineBuilder WithInitialState(string name)
     {
         initialState = name;
+        return this;
+    }
+
+    internal PetStateMachineBuilder WithTransitionObserver(Action<string, string> observer)
+    {
+        transitionObserver = observer;
         return this;
     }
 
@@ -97,7 +109,7 @@ internal sealed class PetStateMachineBuilder
             throw new InvalidOperationException($"Initial state '{initial}' was not defined.");
         }
 
-        return new PetStateMachine(materialized, initial);
+        return new PetStateMachine(materialized, initial, transitionObserver);
     }
 }
 
