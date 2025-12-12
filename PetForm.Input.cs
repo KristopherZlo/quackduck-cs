@@ -39,6 +39,8 @@ internal sealed partial class PetForm
         prevDragScreenPos = pos;
         lastDragTime = DateTime.UtcNow;
         prevDragTime = lastDragTime;
+        dragReleaseWasGrounded = false;
+        dragReleaseRun = false;
         horizontalVelocity = 0;
         verticalVelocity = 0;
         Capture = true;
@@ -77,8 +79,18 @@ internal sealed partial class PetForm
         horizontalVelocity = (float)(deltaX / elapsedMs * animationTimer.Interval);
         verticalVelocity = (float)(deltaY / elapsedMs * animationTimer.Interval);
 
-        screenX = lastDragScreenPos.X - dragOffset.X;
-        screenY = lastDragScreenPos.Y - dragOffset.Y - 1f; // nudge up so we start airborne
+        var releaseX = lastDragScreenPos.X - dragOffset.X;
+        var releaseY = lastDragScreenPos.Y - dragOffset.Y;
+        var groundDelta = Math.Abs(releaseY - GroundLevel);
+        dragReleaseWasGrounded = groundDelta <= 2f;
+        dragReleaseRun = random.Next(0, 2) == 0;
+        if (dragReleaseWasGrounded)
+        {
+            verticalVelocity = 0;
+        }
+
+        screenX = releaseX;
+        screenY = dragReleaseWasGrounded ? GroundLevel : releaseY - 1f; // nudge up when airborne
         workingArea = Screen.FromControl(this).WorkingArea;
         KeepPetInBounds(workingArea);
         BounceHorizontally();

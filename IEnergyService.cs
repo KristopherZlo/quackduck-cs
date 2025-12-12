@@ -9,4 +9,5 @@ internal interface IEnergyService
 
     void Spend(int amount);
     void Restore(int amount);
+    void Set(int amount);
 }

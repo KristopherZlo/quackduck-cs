@@ -35,4 +35,9 @@ internal sealed class EnergyMeter : IEnergyService
 
         current = System.Math.Min(max, current + amount);
     }
+
+    public void Set(int amount)
+    {
+        current = System.Math.Clamp(amount, 0, max);
+    }
 }

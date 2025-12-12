@@ -15,6 +15,7 @@ internal sealed partial class PetForm
                 .OnUpdate(UpdateIdle)
                 .When(() => isDragging).GoTo("Dragging")
                 .When(ShouldSleep).GoTo("SleepTransition")
+                .When(ShouldAttackFromProximity).GoTo("Attacking")
                 .When(ShouldStartListening).GoTo("Listening")
                 .When(ShouldStartCursorHunt).GoTo("CursorHunt")
                 .When(() => pendingJump).GoTo("Jumping")
@@ -27,6 +28,7 @@ internal sealed partial class PetForm
                 .OnUpdate(() => UpdateTravel(isRunning: false))
                 .When(() => isDragging).GoTo("Dragging")
                 .When(ShouldSleep).GoTo("SleepTransition")
+                .When(ShouldAttackFromProximity).GoTo("Attacking")
                 .When(ShouldStartListening).GoTo("Listening")
                 .When(() => pendingJump).GoTo("Jumping")
                 .When(ReachedTarget).GoTo("Idle")
@@ -37,6 +39,7 @@ internal sealed partial class PetForm
                 .OnUpdate(() => UpdateTravel(isRunning: true))
                 .When(() => isDragging).GoTo("Dragging")
                 .When(ShouldSleep).GoTo("SleepTransition")
+                .When(ShouldAttackFromProximity).GoTo("Attacking")
                 .When(ShouldStartListening).GoTo("Listening")
                 .When(() => pendingJump).GoTo("Jumping")
                 .When(ReachedTarget).GoTo("Idle")
@@ -45,6 +48,7 @@ internal sealed partial class PetForm
             .State("Jumping")
                 .OnEnter(EnterJump)
                 .OnUpdate(UpdateJump)
+                .When(() => isDragging).GoTo("Dragging")
                 .When(ShouldSleep).GoTo("SleepTransition")
                 .When(() => verticalVelocity > 0).GoTo("Falling")
                 .When(() => IsOnGround() && verticalVelocity >= 0).GoTo("Landing")
@@ -52,22 +56,26 @@ internal sealed partial class PetForm
             .State("Falling")
                 .OnEnter(EnterFalling)
                 .OnUpdate(UpdateFalling)
+                .When(() => isDragging).GoTo("Dragging")
                 .When(ShouldSleep).GoTo("SleepTransition")
                 .When(() => IsOnGround() && verticalVelocity >= 0).GoTo("Landing")
                 .EndState()
             .State("Landing")
                 .OnEnter(EnterLanding)
                 .OnUpdate(UpdateLanding)
+                .When(() => isDragging).GoTo("Dragging")
                 .When(() => DateTime.UtcNow >= landingReleaseTime).GoTo("Idle")
                 .EndState()
             .State("Listening")
                 .OnEnter(EnterListening)
                 .OnUpdate(UpdateListening)
+                .When(() => isDragging).GoTo("Dragging")
                 .When(ShouldExitListening).GoTo("Idle")
                 .EndState()
             .State("CursorHunt")
                 .OnEnter(EnterCursorHunt)
                 .OnUpdate(UpdateCursorHunt)
+                .When(() => isDragging).GoTo("Dragging")
                 .When(ShouldSleep).GoTo("SleepTransition")
                 .When(() => IsCursorVeryClose()).GoTo("Attacking")
                 .When(() => ShouldCrouchDuringHunt()).GoTo("Crouching")
@@ -76,6 +84,7 @@ internal sealed partial class PetForm
             .State("Crouching")
                 .OnEnter(EnterCrouch)
                 .OnUpdate(UpdateCrouch)
+                .When(() => isDragging).GoTo("Dragging")
                 .When(ShouldSleep).GoTo("SleepTransition")
                 .When(() => IsCursorVeryClose()).GoTo("Attacking")
                 .When(ReachedTarget).GoTo("Attacking")
@@ -83,29 +92,36 @@ internal sealed partial class PetForm
             .State("Attacking")
                 .OnEnter(EnterAttack)
                 .OnUpdate(UpdateAttack)
+                .When(() => isDragging).GoTo("Dragging")
                 .When(ShouldSleep).GoTo("SleepTransition")
                 .When(() => DateTime.UtcNow >= attackReleaseTime).GoTo("Idle")
                 .EndState()
             .State("Wallgrab")
                 .OnEnter(EnterWallgrab)
                 .OnUpdate(UpdateWallgrab)
+                .When(() => isDragging).GoTo("Dragging")
                 .When(() => DateTime.UtcNow >= wallgrabReleaseTime).GoTo("Jumping")
                 .EndState()
             .State("Dragging")
-                .OnEnter(() => animator.SetAnimation("idle"))
+                .OnEnter(EnterDragging)
                 .OnUpdate(UpdateDragging)
+                .OnExit(ExitDragging)
                 .When(() => !isDragging && !IsOnGround() && verticalVelocity < 0).GoTo("Jumping")
                 .When(() => !isDragging && !IsOnGround()).GoTo("Falling")
+                .When(() => !isDragging && dragReleaseWasGrounded && dragReleaseRun).GoTo("Running")
+                .When(() => !isDragging && dragReleaseWasGrounded).GoTo("Walking")
                 .When(() => !isDragging).GoTo("Idle")
                 .EndState()
             .State("SleepTransition")
                 .OnEnter(EnterSleepTransition)
                 .OnUpdate(UpdateSleepTransition)
+                .When(() => isDragging).GoTo("Dragging")
                 .When(() => DateTime.UtcNow >= sleepTransitionReleaseTime).GoTo("Sleeping")
                 .EndState()
             .State("Sleeping")
                 .OnEnter(EnterSleeping)
                 .OnUpdate(UpdateSleeping)
+                .When(() => isDragging).GoTo("Dragging")
                 .When(ShouldWake).GoTo("Idle")
                 .EndState()
             .WithInitialState("Falling")
@@ -510,6 +526,29 @@ internal sealed partial class PetForm
         BounceHorizontally();
     }
 
+    private void EnterDragging()
+    {
+        if (skin.HasAnimation("dragging"))
+        {
+            animator.SetAnimation("dragging", restartIfSame: true, loop: false, holdOnLastFrame: true);
+        }
+        else
+        {
+            animator.SetAnimation("idle", restartIfSame: true);
+        }
+    }
+
+    private void ExitDragging()
+    {
+        if (dragReleaseWasGrounded)
+        {
+            SnapToGround();
+        }
+
+        dragReleaseWasGrounded = false;
+        dragReleaseRun = false;
+    }
+
     private bool IsCursorVeryClose() => DistanceToCursor() <= 20f;
 
     private float DistanceToCursor()
@@ -518,6 +557,35 @@ internal sealed partial class PetForm
         var dx = cursor.X - screenX;
         var dy = cursor.Y - screenY;
         return (float)Math.Sqrt(dx * dx + dy * dy);
+    }
+
+    private bool ShouldAttackFromProximity()
+    {
+        if (DateTime.UtcNow < nextProximityAttackCheck)
+        {
+            return false;
+        }
+
+        nextProximityAttackCheck = DateTime.UtcNow + TimeSpan.FromSeconds(1);
+        if (skin is null || animator is null)
+        {
+            return false;
+        }
+
+        var cursor = Control.MousePosition;
+        var spriteWidth = skin.FrameWidth * scale;
+        var spriteHeight = skin.FrameHeight * scale;
+        var centerX = screenX + spriteWidth / 2f;
+        var centerY = screenY + spriteHeight / 2f;
+
+        var withinHorizontal = Math.Abs(cursor.X - centerX) <= spriteWidth / 2f;
+        var withinVertical = Math.Abs(cursor.Y - centerY) <= spriteHeight / 2f;
+        if (!withinHorizontal || !withinVertical)
+        {
+            return false;
+        }
+
+        return random.NextDouble() < 0.10;
     }
 
     private void EnterWallgrab()

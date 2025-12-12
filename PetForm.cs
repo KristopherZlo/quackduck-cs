@@ -19,8 +19,8 @@ internal sealed partial class PetForm : Form
     private const float EdgeBounceDamping = 0.78f;
     private const float CeilingBounceDamping = 0.85f;
     private const float RunSpeedMultiplier = 1.8f;
-    private const float JumpImpulse = 10.5f;
-    private const float HuntJumpImpulse = 13.5f;
+    private const float JumpImpulse = 15.75f;
+    private const float HuntJumpImpulse = 20.25f;
     private const float TargetReachedTolerance = 4f;
     private const float RunDistanceThreshold = 600f;
     private const int EnergyRegenPerSecond = 1;
@@ -58,10 +58,13 @@ internal sealed partial class PetForm : Form
     private Point prevDragScreenPos;
     private DateTime lastDragTime;
     private DateTime prevDragTime;
+    private bool dragReleaseWasGrounded;
+    private bool dragReleaseRun;
     private float targetWalkSpeed;
     private PointF? targetPoint;
     private DateTime nextCursorHuntCheck = DateTime.UtcNow + TimeSpan.FromMinutes(5);
     private DateTime nextRandomSoundCheck = DateTime.UtcNow + TimeSpan.FromMinutes(5);
+    private DateTime nextProximityAttackCheck = DateTime.UtcNow;
     private bool pendingJump;
     private bool microphoneEnabled = true;
     private bool wakeRequested;
@@ -175,17 +178,10 @@ internal sealed partial class PetForm : Form
     {
         workingArea = Screen.FromControl(this).WorkingArea;
         HandleDebugControls();
-        if (isDragging)
+        if (isDragging && stateMachine.CurrentState != "Dragging")
         {
-            UpdateDragging();
-            animator.SetAnimation("idle");
-            animator.Update();
-            KeepPetInBounds(workingArea);
-            Location = new Point((int)Math.Round(screenX), (int)Math.Round(screenY));
-            Invalidate();
-            return;
+            stateMachine.ForceState("Dragging");
         }
-
         stateMachine.Update();
         TrackStateHistory();
         SetAnimationSpeedFromVelocity();

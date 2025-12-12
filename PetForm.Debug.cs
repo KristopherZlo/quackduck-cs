@@ -79,6 +79,12 @@ internal sealed partial class PetForm
                 Log($"Force state failed: {ex.Message}");
             }
         }
+
+        var desiredEnergy = debugState.ConsumeRequestedEnergy();
+        if (desiredEnergy.HasValue)
+        {
+            energy.Set(desiredEnergy.Value);
+        }
     }
 
     private void TrackStateHistory()
@@ -107,6 +113,8 @@ internal sealed partial class PetForm
         debugState.CurrentX = screenX;
         debugState.CurrentY = screenY;
         debugState.MicrophoneLevel = lastMicLevel;
+        debugState.EnergyCurrent = energy.Current;
+        debugState.EnergyMax = energy.Max;
     }
 
     private void LogStateChange(string from, string to)
