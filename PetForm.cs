@@ -61,6 +61,7 @@ internal sealed class PetForm : Form
     private DateTime nextCursorHuntCheck = DateTime.UtcNow + TimeSpan.FromMinutes(5);
     private DateTime nextRandomSoundCheck = DateTime.UtcNow + TimeSpan.FromMinutes(5);
     private bool pendingJump;
+    private bool microphoneEnabled = true;
     private bool wakeRequested;
     private bool heardSound;
     private bool spentForTarget;
@@ -75,6 +76,8 @@ internal sealed class PetForm : Form
     private DateTime idleReleaseTime;
     private string? lastStateName;
     private bool fallAnimationStarted;
+    private MicrophoneListener? microphoneListener;
+    private float lastMicLevel;
 
     // Configure the transparent, borderless window and start ticking.
     public PetForm(AppSettings settings, int scale = 1)
@@ -116,7 +119,7 @@ internal sealed class PetForm : Form
         Load += (_, _) =>
         {
             skin = PetSkin.Load(settings.Skin);
-            animator = new PetAnimator(skin, 80d);
+            animator = new PetAnimator(skin, PetAnimator.DefaultFrameDurationMs);
             scale = debugState?.Scale ?? scale;
             ClientSize = new Size(skin.FrameWidth * scale, skin.FrameHeight * scale);
 
@@ -125,10 +128,22 @@ internal sealed class PetForm : Form
             screenY = workingArea.Top;
             KeepPetInBoundsAndApply(workingArea);
 
+            microphoneEnabled = true;
+            if (debugState is not null)
+            {
+                debugState.MicrophoneEnabled = true;
+                debugState.MicrophoneThreshold = 0.08;
+            }
+            InitializeMicrophone();
+
             stateMachine = BuildStateMachine();
             animationTimer.Start();
             energyTimer.Start();
-            debugState?.AppendHistory(stateMachine.CurrentState);
+            if (debugState is not null)
+            {
+                debugState.CurrentState = stateMachine.CurrentState;
+                debugState.AppendHistory(stateMachine.CurrentState);
+            }
         };
 
         Resize += (_, _) =>
@@ -267,6 +282,7 @@ internal sealed class PetForm : Form
             .State("Dragging")
                 .OnEnter(() => animator.SetAnimation("idle"))
                 .OnUpdate(UpdateDragging)
+                .When(() => !isDragging && !IsOnGround() && verticalVelocity < 0).GoTo("Jumping")
                 .When(() => !isDragging && !IsOnGround()).GoTo("Falling")
                 .When(() => !isDragging).GoTo("Idle")
                 .EndState()
@@ -462,6 +478,11 @@ internal sealed class PetForm : Form
         }
 
         fallAnimationStarted = true;
+        if (verticalVelocity <= -0.1f)
+        {
+            return;
+        }
+
         if (verticalVelocity < 0.1f)
         {
             verticalVelocity = 0.5f * DebugSpeedFactor;
@@ -851,7 +872,7 @@ internal sealed class PetForm : Form
         }
 
         skin = PetSkin.Load(settings.Skin);
-        animator = new PetAnimator(skin, 50d);
+        animator = new PetAnimator(skin, PetAnimator.DefaultFrameDurationMs);
         ClientSize = new Size(skin.FrameWidth * scale, skin.FrameHeight * scale);
         KeepPetInBoundsAndApply(workingArea);
         Log("Skin reloaded (debug)");
@@ -864,6 +885,25 @@ internal sealed class PetForm : Form
         if (debugState is null || !debugState.DebugEnabled)
         {
             return;
+        }
+
+        var desiredMicEnabled = debugState.MicrophoneEnabled;
+        var micGain = Math.Max(0.1f, (float)debugState.MicrophoneGain);
+        var micThreshold = Math.Clamp((float)debugState.MicrophoneThreshold, 0.001f, 1f);
+        microphoneListener?.SetGain(micGain);
+        microphoneListener?.SetThreshold(micThreshold);
+        if (desiredMicEnabled != microphoneEnabled)
+        {
+            microphoneEnabled = desiredMicEnabled;
+            if (microphoneEnabled)
+            {
+                TryStartMicrophone();
+            }
+            else
+            {
+                StopMicrophone();
+                isHearingSound = false;
+            }
         }
 
         if (debugState.Scale != scale)
@@ -924,6 +964,7 @@ internal sealed class PetForm : Form
         if (!string.Equals(name, lastStateName, StringComparison.OrdinalIgnoreCase))
         {
             lastStateName = name;
+            debugState.CurrentState = name;
             debugState.AppendHistory(name);
         }
     }
@@ -937,6 +978,54 @@ internal sealed class PetForm : Form
 
         debugState.CurrentX = screenX;
         debugState.CurrentY = screenY;
+        debugState.MicrophoneLevel = lastMicLevel;
+    }
+
+    private void InitializeMicrophone()
+    {
+        microphoneListener?.Dispose();
+        microphoneListener = new MicrophoneListener(NotifySoundStarted, NotifySoundStopped, level => lastMicLevel = level);
+        microphoneListener.SetGain((float)(debugState?.MicrophoneGain ?? 1.0));
+        microphoneListener.SetThreshold((float)(debugState?.MicrophoneThreshold ?? 0.08));
+        TryStartMicrophone();
+    }
+
+    private void TryStartMicrophone()
+    {
+        if (!microphoneEnabled || microphoneListener is null || microphoneListener.IsRunning)
+        {
+            return;
+        }
+
+        try
+        {
+            microphoneListener.Start();
+            Log("Microphone listening started");
+        }
+        catch (Exception ex)
+        {
+            microphoneEnabled = false;
+            if (debugState is not null)
+            {
+                debugState.MicrophoneEnabled = false;
+            }
+            Log($"Microphone start failed: {ex.Message}");
+        }
+    }
+
+    private void StopMicrophone()
+    {
+        try
+        {
+            microphoneListener?.Stop();
+            Log("Microphone listening stopped");
+        }
+        catch
+        {
+            // ignore stop failures
+        }
+
+        lastMicLevel = 0;
     }
 
     // External hooks for microphone events (call from audio listener)
@@ -1075,6 +1164,7 @@ internal sealed class PetForm : Form
             energyTimer.Stop();
             energyTimer.Dispose();
             skin?.Dispose();
+        microphoneListener?.Dispose();
         }
 
         base.Dispose(disposing);
@@ -1186,6 +1276,16 @@ internal sealed class PetForm : Form
             return;
         }
 
-        animator.SetSpeedMultiplier(1.0);
+        var speed = Math.Abs(horizontalVelocity);
+        var normalized = speed / (GroundSpeedBase * RunSpeedMultiplier);
+        var multiplier = Math.Clamp(normalized, 0.5f, 2.5f);
+
+        if (speed < 0.1f && Math.Abs(verticalVelocity) > 0.1f)
+        {
+            multiplier = Math.Clamp(Math.Abs(verticalVelocity) / JumpImpulse, 0.5f, 2.0f);
+        }
+
+        multiplier *= DebugSpeedFactor;
+        animator.SetSpeedMultiplier(multiplier);
     }
 }

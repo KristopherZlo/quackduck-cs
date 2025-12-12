@@ -249,6 +249,8 @@ internal sealed class PetSkin : IDisposable
 /// </summary>
 internal sealed class PetAnimator
 {
+    internal const double DefaultFrameDurationMs = 70d;
+
     private readonly PetSkin skin;
     private readonly Stopwatch stopwatch = Stopwatch.StartNew();
     private readonly double baseFrameDurationMs;
@@ -260,7 +262,7 @@ internal sealed class PetAnimator
     private bool holdLastFrame;
     private bool finishedOnce;
 
-    internal PetAnimator(PetSkin skin, double frameDurationMs = 80d)
+    internal PetAnimator(PetSkin skin, double frameDurationMs = DefaultFrameDurationMs)
     {
         this.skin = skin;
         baseFrameDurationMs = frameDurationMs;
