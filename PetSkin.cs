@@ -260,7 +260,7 @@ internal sealed class PetAnimator
     private bool holdLastFrame;
     private bool finishedOnce;
 
-    internal PetAnimator(PetSkin skin, double frameDurationMs = 50d)
+    internal PetAnimator(PetSkin skin, double frameDurationMs = 80d)
     {
         this.skin = skin;
         baseFrameDurationMs = frameDurationMs;

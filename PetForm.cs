@@ -116,7 +116,7 @@ internal sealed class PetForm : Form
         Load += (_, _) =>
         {
             skin = PetSkin.Load(settings.Skin);
-            animator = new PetAnimator(skin, 50d);
+            animator = new PetAnimator(skin, 80d);
             scale = debugState?.Scale ?? scale;
             ClientSize = new Size(skin.FrameWidth * scale, skin.FrameHeight * scale);
 
