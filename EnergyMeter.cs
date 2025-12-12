@@ -1,6 +1,6 @@
 namespace QuackDuck;
 
-internal sealed class EnergyMeter
+internal sealed class EnergyMeter : IEnergyService
 {
     private readonly int max;
     private int current;
@@ -11,12 +11,12 @@ internal sealed class EnergyMeter
         current = max;
     }
 
-    internal int Current => current;
-    internal int Max => max;
-    internal double Percent => (double)current / max * 100d;
-    internal bool IsDepleted => current <= 0;
+    public int Current => current;
+    public int Max => max;
+    public double Percent => (double)current / max * 100d;
+    public bool IsDepleted => current <= 0;
 
-    internal void Spend(int amount)
+    public void Spend(int amount)
     {
         if (amount <= 0)
         {
@@ -26,7 +26,7 @@ internal sealed class EnergyMeter
         current = System.Math.Max(0, current - amount);
     }
 
-    internal void Restore(int amount)
+    public void Restore(int amount)
     {
         if (amount <= 0)
         {

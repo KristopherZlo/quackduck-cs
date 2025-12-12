@@ -10,12 +10,12 @@ namespace QuackDuck;
 /// Minimal sound effect player that supports wav/mp3 files via NAudio.
 /// Playback runs on a background task so UI threads remain responsive.
 /// </summary>
-internal sealed class SoundEffectPlayer : IDisposable
+internal sealed class SoundEffectPlayer : IPetAudioPlayer, IDisposable
 {
     private readonly CancellationTokenSource cancellation = new();
     private bool disposed;
 
-    internal Task PlayAsync(string path)
+    public Task PlayAsync(string path)
     {
         if (disposed || string.IsNullOrWhiteSpace(path) || !File.Exists(path))
         {

@@ -37,8 +37,8 @@ internal sealed partial class PetForm : Form
     private int scale;
     private readonly Random random = new();
     private readonly AppSettings settings;
-    private readonly EnergyMeter energy = new();
-    private readonly SoundEffectPlayer soundPlayer = new();
+    private readonly IEnergyService energy = new EnergyMeter();
+    private readonly IPetAudioPlayer soundPlayer = new SoundEffectPlayer();
     private readonly DebugState? debugState;
     private PetSkin skin = null!;
     private PetAnimator animator = null!;
@@ -225,7 +225,7 @@ internal sealed partial class PetForm : Form
             energyTimer.Dispose();
             skin?.Dispose();
             microphoneListener?.Dispose();
-            soundPlayer.Dispose();
+            (soundPlayer as IDisposable)?.Dispose();
         }
 
         base.Dispose(disposing);
