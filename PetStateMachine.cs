@@ -30,6 +30,11 @@ internal sealed class PetStateMachine
         }
     }
 
+    internal void ForceState(string targetState)
+    {
+        Switch(targetState);
+    }
+
     private void Switch(string targetState)
     {
         if (!states.TryGetValue(targetState, out var next))

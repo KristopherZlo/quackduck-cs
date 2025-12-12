@@ -16,6 +16,9 @@ internal sealed class AppSettings
     [JsonPropertyName("random_sound_chance_percent")]
     public int RandomSoundChancePercent { get; init; } = 25;
 
+    [JsonPropertyName("debug")]
+    public bool Debug { get; init; }
+
     internal static AppSettings Load()
     {
         var baseDir = AppContext.BaseDirectory;

@@ -2,6 +2,7 @@ using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
+using QuackDuck.DebugUI;
 
 namespace QuackDuck;
 
@@ -33,10 +34,11 @@ internal sealed class PetForm : Form
     // Timer controls the animation loop on the UI thread.
     private readonly System.Windows.Forms.Timer animationTimer;
     private readonly System.Windows.Forms.Timer energyTimer;
-    private readonly int scale;
+    private int scale;
     private readonly Random random = new();
     private readonly AppSettings settings;
     private readonly EnergyMeter energy = new();
+    private readonly DebugState? debugState;
     private PetSkin skin = null!;
     private PetAnimator animator = null!;
     private PetStateMachine stateMachine = null!;
@@ -71,6 +73,8 @@ internal sealed class PetForm : Form
     private bool isHearingSound;
     private DateTime soundStoppedAt = DateTime.MinValue;
     private DateTime idleReleaseTime;
+    private string? lastStateName;
+    private bool fallAnimationStarted;
 
     // Configure the transparent, borderless window and start ticking.
     public PetForm(AppSettings settings, int scale = 1)
@@ -82,6 +86,15 @@ internal sealed class PetForm : Form
         }
 
         this.scale = scale;
+        if (settings.Debug)
+        {
+            debugState = new DebugState
+            {
+                Scale = scale,
+                DebugEnabled = true
+            };
+            DebugHost.Start(debugState);
+        }
         Text = "QuackDuck Pet";
         StartPosition = FormStartPosition.Manual;
         BackColor = Color.Magenta;
@@ -104,6 +117,7 @@ internal sealed class PetForm : Form
         {
             skin = PetSkin.Load(settings.Skin);
             animator = new PetAnimator(skin, 50d);
+            scale = debugState?.Scale ?? scale;
             ClientSize = new Size(skin.FrameWidth * scale, skin.FrameHeight * scale);
 
             workingArea = Screen.FromControl(this).WorkingArea;
@@ -114,6 +128,7 @@ internal sealed class PetForm : Form
             stateMachine = BuildStateMachine();
             animationTimer.Start();
             energyTimer.Start();
+            debugState?.AppendHistory(stateMachine.CurrentState);
         };
 
         Resize += (_, _) =>
@@ -131,6 +146,7 @@ internal sealed class PetForm : Form
     private void AnimationTick(object? sender, EventArgs e)
     {
         workingArea = Screen.FromControl(this).WorkingArea;
+        HandleDebugControls();
         if (isDragging)
         {
             UpdateDragging();
@@ -143,10 +159,12 @@ internal sealed class PetForm : Form
         }
 
         stateMachine.Update();
+        TrackStateHistory();
         SetAnimationSpeedFromVelocity();
         animator.Update();
         KeepPetInBounds(workingArea);
         Location = new Point((int)Math.Round(screenX), (int)Math.Round(screenY));
+        UpdateDebugTelemetry();
         Invalidate();
     }
 
@@ -175,6 +193,7 @@ internal sealed class PetForm : Form
                 .When(ShouldStartListening).GoTo("Listening")
                 .When(ShouldStartCursorHunt).GoTo("CursorHunt")
                 .When(() => pendingJump).GoTo("Jumping")
+                .When(() => !IsOnGround()).GoTo("Falling")
                 .When(ShouldStartRunning).GoTo("Running")
                 .When(ShouldStartWalking).GoTo("Walking")
                 .EndState()
@@ -184,8 +203,8 @@ internal sealed class PetForm : Form
                 .When(() => isDragging).GoTo("Dragging")
                 .When(ShouldSleep).GoTo("SleepTransition")
                 .When(() => pendingJump).GoTo("Jumping")
-                .When(ReachedTarget).GoTo("Landing")
-                .When(() => !IsOnGround()).GoTo("Jumping")
+                .When(ReachedTarget).GoTo("Idle")
+                .When(() => !IsOnGround()).GoTo("Falling")
                 .EndState()
             .State("Running")
                 .OnEnter(() => BeginTravel(isRunning: true))
@@ -193,12 +212,19 @@ internal sealed class PetForm : Form
                 .When(() => isDragging).GoTo("Dragging")
                 .When(ShouldSleep).GoTo("SleepTransition")
                 .When(() => pendingJump).GoTo("Jumping")
-                .When(ReachedTarget).GoTo("Landing")
-                .When(() => !IsOnGround()).GoTo("Jumping")
+                .When(ReachedTarget).GoTo("Idle")
+                .When(() => !IsOnGround()).GoTo("Falling")
                 .EndState()
             .State("Jumping")
                 .OnEnter(EnterJump)
                 .OnUpdate(UpdateJump)
+                .When(ShouldSleep).GoTo("SleepTransition")
+                .When(() => verticalVelocity > 0).GoTo("Falling")
+                .When(() => IsOnGround() && verticalVelocity >= 0).GoTo("Landing")
+                .EndState()
+            .State("Falling")
+                .OnEnter(EnterFalling)
+                .OnUpdate(UpdateFalling)
                 .When(ShouldSleep).GoTo("SleepTransition")
                 .When(() => IsOnGround() && verticalVelocity >= 0).GoTo("Landing")
                 .EndState()
@@ -241,7 +267,8 @@ internal sealed class PetForm : Form
             .State("Dragging")
                 .OnEnter(() => animator.SetAnimation("idle"))
                 .OnUpdate(UpdateDragging)
-                .When(() => !isDragging).GoTo("Jumping")
+                .When(() => !isDragging && !IsOnGround()).GoTo("Falling")
+                .When(() => !isDragging).GoTo("Idle")
                 .EndState()
             .State("SleepTransition")
                 .OnEnter(EnterSleepTransition)
@@ -253,7 +280,7 @@ internal sealed class PetForm : Form
                 .OnUpdate(UpdateSleeping)
                 .When(ShouldWake).GoTo("Idle")
                 .EndState()
-            .WithInitialState("Idle")
+            .WithInitialState("Falling")
             .Build();
     }
 
@@ -267,6 +294,7 @@ internal sealed class PetForm : Form
         horizontalVelocity = 0;
         verticalVelocity = 0;
         pendingJump = false;
+        fallAnimationStarted = false;
         CheckRandomSounds();
         Log("Enter Idle");
     }
@@ -329,7 +357,7 @@ internal sealed class PetForm : Form
         var animation = isRunning ? "running" : "walk";
         animator.SetAnimation(animation, restartIfSame: true);
         var direction = Math.Sign((targetPoint?.X ?? screenX) - screenX);
-        targetWalkSpeed = (GroundSpeedBase + (float)random.NextDouble() * GroundSpeedVariance) * (isRunning ? RunSpeedMultiplier : 1f) * (direction == 0 ? 1 : direction);
+        targetWalkSpeed = (GroundSpeedBase + (float)random.NextDouble() * GroundSpeedVariance) * (isRunning ? RunSpeedMultiplier : 1f) * DebugSpeedFactor * (direction == 0 ? 1 : direction);
     }
 
     private void UpdateTravel(bool isRunning)
@@ -346,7 +374,7 @@ internal sealed class PetForm : Form
         }
 
         var direction = Math.Sign(targetPoint.Value.X - screenX);
-        var speed = (GroundSpeedBase + (float)random.NextDouble() * GroundSpeedVariance) * (isRunning ? RunSpeedMultiplier : 1f);
+        var speed = (GroundSpeedBase + (float)random.NextDouble() * GroundSpeedVariance) * (isRunning ? RunSpeedMultiplier : 1f) * DebugSpeedFactor;
         horizontalVelocity = direction * speed;
         screenX += horizontalVelocity;
         BounceHorizontally();
@@ -373,17 +401,36 @@ internal sealed class PetForm : Form
 
     private void EnterJump()
     {
+        var launching = pendingJump || IsOnGround();
         if (pendingJump)
         {
             energy.Spend(EnergyCostJump);
         }
 
         pendingJump = false;
-        animator.SetAnimation("jump", restartIfSame: true);
-        verticalVelocity = -JumpImpulse;
-        if (Math.Abs(horizontalVelocity) < GroundSpeedBase * 0.5f)
+        fallAnimationStarted = false;
+
+        if (launching)
         {
-            horizontalVelocity = facingRight ? GroundSpeedBase : -GroundSpeedBase;
+            animator.SetAnimation("jump", restartIfSame: true);
+            verticalVelocity = -JumpImpulse * DebugSpeedFactor;
+            if (Math.Abs(horizontalVelocity) < GroundSpeedBase * 0.5f)
+            {
+                horizontalVelocity = (facingRight ? GroundSpeedBase : -GroundSpeedBase) * DebugSpeedFactor;
+            }
+        }
+        else
+        {
+            fallAnimationStarted = false;
+            if (verticalVelocity > 0)
+            {
+                animator.SetAnimation("fall", loop: false, holdOnLastFrame: true);
+                fallAnimationStarted = true;
+            }
+            else
+            {
+                animator.SetAnimation("jump", restartIfSame: true);
+            }
         }
     }
 
@@ -392,10 +439,40 @@ internal sealed class PetForm : Form
         ApplyGravity();
         screenY += verticalVelocity;
         screenX += horizontalVelocity * AirDriftFactor;
-        if (verticalVelocity > 0)
+        if (verticalVelocity > 0 && !fallAnimationStarted)
+        {
+            animator.SetAnimation("fall", loop: false, holdOnLastFrame: true);
+            fallAnimationStarted = true;
+        }
+        if (screenY >= GroundLevel)
+        {
+            SnapToGround();
+            verticalVelocity = 0;
+        }
+        BounceVertically();
+        BounceHorizontally();
+        UpdateFacingFromVelocity();
+    }
+
+    private void EnterFalling()
+    {
+        if (!fallAnimationStarted)
         {
             animator.SetAnimation("fall", loop: false, holdOnLastFrame: true);
         }
+
+        fallAnimationStarted = true;
+        if (verticalVelocity < 0.1f)
+        {
+            verticalVelocity = 0.5f * DebugSpeedFactor;
+        }
+    }
+
+    private void UpdateFalling()
+    {
+        ApplyGravity();
+        screenY += verticalVelocity;
+        screenX += horizontalVelocity * AirDriftFactor;
         if (screenY >= GroundLevel)
         {
             SnapToGround();
@@ -429,6 +506,7 @@ internal sealed class PetForm : Form
         Log("Enter Listening");
         animator.SetAnimation("listen", restartIfSame: true, loop: true);
         SnapToGround();
+        fallAnimationStarted = false;
         listeningReleaseTime = DateTime.UtcNow;
     }
 
@@ -483,8 +561,8 @@ internal sealed class PetForm : Form
         else
         {
             animator.SetAnimation("running", restartIfSame: true);
-            verticalVelocity = -HuntJumpImpulse;
-            horizontalVelocity = Math.Sign(targetPoint.Value.X - screenX) * GroundSpeedBase * RunSpeedMultiplier;
+            verticalVelocity = -HuntJumpImpulse * DebugSpeedFactor;
+            horizontalVelocity = Math.Sign(targetPoint.Value.X - screenX) * GroundSpeedBase * RunSpeedMultiplier * DebugSpeedFactor;
         }
         Log("Enter CursorHunt");
     }
@@ -507,7 +585,7 @@ internal sealed class PetForm : Form
 
         if (IsOnGround())
         {
-            var speed = GroundSpeedBase * (distance > RunDistanceThreshold ? RunSpeedMultiplier : 1f);
+            var speed = GroundSpeedBase * (distance > RunDistanceThreshold ? RunSpeedMultiplier : 1f) * DebugSpeedFactor;
             var direction = Math.Sign((targetPoint?.X ?? screenX) - screenX);
             horizontalVelocity = direction * speed;
             screenX += horizontalVelocity;
@@ -547,6 +625,7 @@ internal sealed class PetForm : Form
         targetPoint = new PointF(cursor.X, GroundLevel);
         spentForTarget = false;
         energy.Spend(EnergyCostCrouch);
+        fallAnimationStarted = false;
         Log("Enter Crouching");
     }
 
@@ -559,7 +638,7 @@ internal sealed class PetForm : Form
         }
 
         var direction = Math.Sign(targetPoint.Value.X - screenX);
-        horizontalVelocity = direction * GroundSpeedBase * 0.6f;
+        horizontalVelocity = direction * GroundSpeedBase * 0.6f * DebugSpeedFactor;
         screenX += horizontalVelocity;
         BounceHorizontally();
         UpdateFacingFromVelocity();
@@ -580,11 +659,12 @@ internal sealed class PetForm : Form
 
         attackReleaseTime = DateTime.UtcNow + TimeSpan.FromMilliseconds(450);
         animator.SetAnimation("attack", restartIfSame: true);
+        fallAnimationStarted = false;
 
         var cursor = Control.MousePosition;
         var dx = cursor.X - screenX;
         facingRight = dx >= 0;
-        horizontalVelocity = Math.Sign(dx) * GroundSpeedBase * RunSpeedMultiplier;
+        horizontalVelocity = Math.Sign(dx) * GroundSpeedBase * RunSpeedMultiplier * DebugSpeedFactor;
         if (IsOnGround())
         {
             SnapToGround();
@@ -615,6 +695,7 @@ internal sealed class PetForm : Form
         wallgrabReleaseTime = DateTime.UtcNow + TimeSpan.FromMilliseconds(500);
         horizontalVelocity = 0;
         verticalVelocity = 0;
+        fallAnimationStarted = false;
         energy.Spend(EnergyCostWallgrab);
         Log("Enter Wallgrab");
     }
@@ -649,6 +730,7 @@ internal sealed class PetForm : Form
         animator.SetAnimation("sleep_transition", restartIfSame: true);
         sleepTransitionReleaseTime = DateTime.UtcNow + TimeSpan.FromMilliseconds(500);
         SnapToGround();
+        fallAnimationStarted = false;
         isSleeping = false;
         Log("Enter SleepTransition");
     }
@@ -663,6 +745,7 @@ internal sealed class PetForm : Form
         animator.SetAnimation("sleep", restartIfSame: true);
         SnapToGround();
         isSleeping = true;
+        fallAnimationStarted = false;
         wakeRequested = false;
         Log("Enter Sleeping");
     }
@@ -757,6 +840,105 @@ internal sealed class PetForm : Form
         }
     }
 
+    private void ReloadSkin()
+    {
+        try
+        {
+            skin?.Dispose();
+        }
+        catch
+        {
+        }
+
+        skin = PetSkin.Load(settings.Skin);
+        animator = new PetAnimator(skin, 50d);
+        ClientSize = new Size(skin.FrameWidth * scale, skin.FrameHeight * scale);
+        KeepPetInBoundsAndApply(workingArea);
+        Log("Skin reloaded (debug)");
+    }
+
+    private float DebugSpeedFactor => Math.Max(0.1f, (float)(debugState?.SpeedMultiplier ?? 1d));
+
+    private void HandleDebugControls()
+    {
+        if (debugState is null || !debugState.DebugEnabled)
+        {
+            return;
+        }
+
+        if (debugState.Scale != scale)
+        {
+            scale = Math.Max(1, debugState.Scale);
+            ClientSize = new Size(skin.FrameWidth * scale, skin.FrameHeight * scale);
+            KeepPetInBoundsAndApply(workingArea);
+        }
+
+        if (debugState.ConsumeFlip())
+        {
+            facingRight = !facingRight;
+            horizontalVelocity = -horizontalVelocity;
+            Log("Flip direction (debug)");
+        }
+
+        if (debugState.ConsumeReloadSkin())
+        {
+            ReloadSkin();
+        }
+
+        if (debugState.ConsumeReset())
+        {
+            targetPoint = null;
+            horizontalVelocity = 0;
+            verticalVelocity = 0;
+            spentForTarget = false;
+            wakeRequested = false;
+            pendingJump = false;
+            energy.Restore(energy.Max);
+            stateMachine.ForceState("Idle");
+            Log("Reset (debug)");
+        }
+
+        var desired = debugState.ConsumeDesiredState();
+        if (!string.IsNullOrWhiteSpace(desired))
+        {
+            try
+            {
+                stateMachine.ForceState(desired);
+                Log($"Force state -> {desired}");
+            }
+            catch (Exception ex)
+            {
+                Log($"Force state failed: {ex.Message}");
+            }
+        }
+    }
+
+    private void TrackStateHistory()
+    {
+        if (debugState is null)
+        {
+            return;
+        }
+
+        var name = stateMachine.CurrentState;
+        if (!string.Equals(name, lastStateName, StringComparison.OrdinalIgnoreCase))
+        {
+            lastStateName = name;
+            debugState.AppendHistory(name);
+        }
+    }
+
+    private void UpdateDebugTelemetry()
+    {
+        if (debugState is null)
+        {
+            return;
+        }
+
+        debugState.CurrentX = screenX;
+        debugState.CurrentY = screenY;
+    }
+
     // External hooks for microphone events (call from audio listener)
     internal void NotifySoundStarted()
     {
@@ -803,12 +985,13 @@ internal sealed class PetForm : Form
         }
     }
 
-    private float GroundLevel => workingArea.Bottom - ClientSize.Height;
+    private float GroundLevel => workingArea.Bottom - ClientSize.Height + (debugState?.GroundOffset ?? 0f);
 
     private void SnapToGround()
     {
         screenY = GroundLevel;
         verticalVelocity = 0;
+        fallAnimationStarted = false;
     }
 
     private bool IsOnGround() => screenY >= GroundLevel - 0.05f;
