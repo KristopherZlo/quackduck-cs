@@ -84,7 +84,6 @@ internal sealed partial class PetForm : Form
     private bool travelActive;
     private int cursorHuntChancePercent;
     private int randomSoundChancePercent;
-    private SettingsForm? settingsForm;
     private bool isPausedHidden;
 
     // Configure the transparent, borderless window and start ticking.
@@ -221,20 +220,7 @@ internal sealed partial class PetForm : Form
 
     private void OpenSettings()
     {
-        if (settingsForm is { IsDisposed: false })
-        {
-            settingsForm.Focus();
-            return;
-        }
-
-        var snapshot = new PetSettingsSnapshot
-        {
-            CursorHuntChancePercent = cursorHuntChancePercent,
-            RandomSoundChancePercent = randomSoundChancePercent
-        };
-
-        settingsForm = new SettingsForm(snapshot, ApplySettings);
-        settingsForm.Show(this);
+        DebugUI.DebugHost.OpenSettings();
     }
 
     private void ApplySettings(PetSettingsSnapshot snapshot)
