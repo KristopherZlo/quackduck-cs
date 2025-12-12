@@ -1,8 +1,13 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Windows.Forms;
+using System.Threading;
+using System.Threading.Tasks;
+using NAudio.Wave;
 using QuackDuck.DebugUI;
 
 namespace QuackDuck;
@@ -40,11 +45,16 @@ internal sealed partial class PetForm : Form
     private readonly AppSettings settings;
     private readonly IEnergyService energy = new EnergyMeter();
     private readonly IPetAudioPlayer soundPlayer = new SoundEffectPlayer();
-    private readonly DebugState? debugState;
+    private readonly DebugState debugState;
     private PetSkin skin = null!;
     private PetAnimator animator = null!;
     private PetStateMachine stateMachine = null!;
+    private NameOverlayForm? nameOverlay;
+    private CancellationTokenSource? cursorKnockbackCts;
+    private Task? cursorKnockbackTask;
     private Rectangle workingArea;
+    private string currentSkinName = "default";
+    private string? customSkinRoot;
 
     // The logical screen position and motion state of the transparent window.
     private float screenX;
@@ -75,6 +85,11 @@ internal sealed partial class PetForm : Form
     private DateTime wallgrabReleaseTime;
     private DateTime attackReleaseTime;
     private DateTime sleepTransitionReleaseTime;
+    private bool soundEffectsEnabled = true;
+    private double soundEffectsVolume = 1.0;
+    private bool autostartApplied;
+    private string appliedLanguage = "English";
+    private int selectedMicDeviceIndex = -1;
     private bool isSleeping;
     private bool isHearingSound;
     private DateTime soundStoppedAt = DateTime.MinValue;
@@ -101,15 +116,24 @@ internal sealed partial class PetForm : Form
         this.scale = scale;
         cursorHuntChancePercent = settings.CursorHuntChancePercent;
         randomSoundChancePercent = settings.RandomSoundChancePercent;
-        if (settings.Debug)
+        debugState = new DebugState
         {
-            debugState = new DebugState
+            Scale = scale,
+            DebugEnabled = settings.Debug,
+            PetName = "Quack",
+            SelectedSkin = settings.Skin
+        };
+        SettingsStorage.LoadInto(debugState);
+        this.scale = debugState.Scale;
+        debugState.MicrophoneThreshold = debugState.ActivationThresholdPercent / 100.0;
+        debugState.SelectedPetSize = string.IsNullOrWhiteSpace(debugState.SelectedPetSize)
+            ? this.scale switch
             {
-                Scale = scale,
-                DebugEnabled = true
-            };
-            DebugHost.Start(debugState);
-        }
+                1 => "Small",
+                2 => "Medium",
+                _ => "Big"
+            }
+            : debugState.SelectedPetSize;
         Text = "QuackDuck Pet";
         StartPosition = FormStartPosition.Manual;
         BackColor = Color.Magenta;
@@ -131,22 +155,29 @@ internal sealed partial class PetForm : Form
 
         Load += (_, _) =>
         {
-            skin = PetSkin.Load(settings.Skin);
+            currentSkinName = string.IsNullOrWhiteSpace(debugState.SelectedSkin) ? settings.Skin : debugState.SelectedSkin;
+            debugState.SelectedSkin = currentSkinName;
+            customSkinRoot = debugState.SkinsFolderPath;
+            skin = PetSkin.Load(currentSkinName, customSkinRoot);
             animator = new PetAnimator(skin, PetAnimator.DefaultFrameDurationMs);
-            scale = debugState?.Scale ?? scale;
+            scale = debugState.Scale;
             ClientSize = new Size(skin.FrameWidth * scale, skin.FrameHeight * scale);
+            soundEffectsEnabled = debugState.SoundEffectsEnabled;
+            soundEffectsVolume = Math.Clamp(debugState.EffectsVolumePercent / 100d, 0d, 1d);
+            soundPlayer.Enabled = soundEffectsEnabled;
+            soundPlayer.Volume = soundEffectsVolume;
+            appliedLanguage = debugState.SelectedLanguage;
+            ApplyLanguage(appliedLanguage);
 
             workingArea = Screen.FromControl(this).WorkingArea;
             screenX = workingArea.Left + (workingArea.Width - ClientSize.Width) / 2f;
             screenY = workingArea.Top;
             KeepPetInBoundsAndApply(workingArea);
 
-            microphoneEnabled = true;
-            if (debugState is not null)
-            {
-                debugState.MicrophoneEnabled = true;
-                debugState.MicrophoneThreshold = 0.08;
-            }
+            PopulateInputDevices();
+            selectedMicDeviceIndex = ResolveMicDeviceIndex(debugState.SelectedInputDevice);
+            microphoneEnabled = debugState.MicrophoneEnabled;
+            debugState.MicrophoneThreshold = Math.Clamp(debugState.MicrophoneThreshold, 0.001, 1.0);
             InitializeMicrophone();
 
             stateMachine = BuildStateMachine();
@@ -157,6 +188,9 @@ internal sealed partial class PetForm : Form
                 debugState.CurrentState = stateMachine.CurrentState;
                 debugState.AppendHistory(stateMachine.CurrentState);
             }
+
+            nameOverlay = new NameOverlayForm();
+            UpdateNameOverlay();
 
             InitializeTrayIcon();
         };
@@ -188,6 +222,7 @@ internal sealed partial class PetForm : Form
         animator.Update();
         KeepPetInBounds(workingArea);
         Location = new Point((int)Math.Round(screenX), (int)Math.Round(screenY));
+        UpdateNameOverlay();
         UpdateDebugTelemetry();
         Invalidate();
     }
@@ -202,11 +237,46 @@ internal sealed partial class PetForm : Form
         {
         }
 
-        skin = PetSkin.Load(settings.Skin);
+        ApplySkin(debugState.SelectedSkin);
+        Log("Skin reloaded (debug)");
+    }
+
+    private void ApplySkin(string? skinName)
+    {
+        var desired = string.IsNullOrWhiteSpace(skinName) ? "default" : skinName;
+        try
+        {
+            skin?.Dispose();
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            skin = PetSkin.Load(desired, customSkinRoot);
+            currentSkinName = desired;
+        }
+        catch (Exception ex)
+        {
+            Log($"Skin '{desired}' failed to load: {ex.Message}. Falling back to default.");
+            try
+            {
+                desired = "default";
+                skin = PetSkin.Load(desired, customSkinRoot);
+                currentSkinName = desired;
+            }
+            catch (Exception fallbackEx)
+            {
+                Log($"Default skin failed to load: {fallbackEx.Message}");
+                throw;
+            }
+        }
+
         animator = new PetAnimator(skin, PetAnimator.DefaultFrameDurationMs);
+        debugState.SelectedSkin = currentSkinName;
         ClientSize = new Size(skin.FrameWidth * scale, skin.FrameHeight * scale);
         KeepPetInBoundsAndApply(workingArea);
-        Log("Skin reloaded (debug)");
     }
 
     private void Log(string message)
@@ -214,8 +284,188 @@ internal sealed partial class PetForm : Form
         Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] {message}");
     }
 
+    private void ApplyLanguage(string language)
+    {
+        var culture = string.Equals(language, "Russian", StringComparison.OrdinalIgnoreCase)
+            ? new CultureInfo("ru-RU")
+            : new CultureInfo("en-US");
+
+        try
+        {
+            CultureInfo.CurrentCulture = culture;
+            CultureInfo.CurrentUICulture = culture;
+        }
+        catch
+        {
+        }
+    }
+
+    private void UpdateNameOverlay()
+    {
+        if (nameOverlay is null || debugState is null)
+        {
+            return;
+        }
+
+        if (isPausedHidden || !debugState.ShowName)
+        {
+            if (nameOverlay.Visible)
+            {
+                nameOverlay.Hide();
+            }
+            return;
+        }
+
+        var name = string.IsNullOrWhiteSpace(debugState.PetName) ? "Quack" : debugState.PetName;
+        var fontSize = (float)Math.Clamp(debugState.FontSize, 8, 64);
+        nameOverlay.UpdateContent(name, fontSize);
+
+        var petLocation = new Point((int)Math.Round(screenX), (int)Math.Round(screenY));
+        nameOverlay.UpdatePosition(petLocation, ClientSize.Width, debugState.NameOffset);
+        if (!nameOverlay.Visible)
+        {
+            nameOverlay.Show();
+        }
+    }
+
+    private void ApplyLiveSettingsFromState()
+    {
+        debugState.PetSpeed = Math.Max(0.1, debugState.PetSpeed);
+        debugState.SpeedMultiplier = debugState.PetSpeed;
+
+        var desiredScale = MapSizeToScale(debugState.SelectedPetSize);
+        if (desiredScale != scale)
+        {
+            scale = desiredScale;
+            ClientSize = new Size(skin.FrameWidth * scale, skin.FrameHeight * scale);
+            KeepPetInBoundsAndApply(workingArea);
+        }
+
+        var desiredMicEnabled = debugState.MicrophoneEnabled;
+        var micGain = Math.Max(0.1f, (float)debugState.MicrophoneGain);
+        var micThreshold = Math.Clamp((float)debugState.MicrophoneThreshold, 0.001f, 1f);
+        microphoneListener?.SetGain(micGain);
+        microphoneListener?.SetThreshold(micThreshold);
+        var newDeviceIndex = ResolveMicDeviceIndex(debugState.SelectedInputDevice);
+        if (newDeviceIndex != selectedMicDeviceIndex)
+        {
+            selectedMicDeviceIndex = newDeviceIndex;
+            microphoneListener?.SetDeviceIndex(selectedMicDeviceIndex);
+        }
+        if (desiredMicEnabled != microphoneEnabled)
+        {
+            microphoneEnabled = desiredMicEnabled;
+            if (microphoneEnabled)
+            {
+                TryStartMicrophone();
+            }
+            else
+            {
+                StopMicrophone();
+                isHearingSound = false;
+            }
+        }
+
+        var desiredSoundEnabled = debugState.SoundEffectsEnabled;
+        if (desiredSoundEnabled != soundEffectsEnabled)
+        {
+            soundEffectsEnabled = desiredSoundEnabled;
+            soundPlayer.Enabled = soundEffectsEnabled;
+        }
+
+        var desiredVolume = Math.Clamp(debugState.EffectsVolumePercent / 100d, 0d, 1d);
+        if (Math.Abs(desiredVolume - soundEffectsVolume) > 0.001d)
+        {
+            soundEffectsVolume = desiredVolume;
+            soundPlayer.Volume = soundEffectsVolume;
+        }
+
+        if (debugState.Autostart != autostartApplied)
+        {
+            try
+            {
+                AutostartManager.SetEnabled("QuackDuck", Application.ExecutablePath, debugState.Autostart);
+                autostartApplied = debugState.Autostart;
+            }
+            catch
+            {
+            }
+        }
+
+        if (!string.Equals(appliedLanguage, debugState.SelectedLanguage, StringComparison.OrdinalIgnoreCase))
+        {
+            appliedLanguage = debugState.SelectedLanguage;
+            ApplyLanguage(appliedLanguage);
+        }
+
+        var desiredSkinRoot = debugState.SkinsFolderPath;
+        var desiredSkin = debugState.SelectedSkin;
+        if (!string.Equals(customSkinRoot ?? string.Empty, desiredSkinRoot ?? string.Empty, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(currentSkinName, desiredSkin, StringComparison.OrdinalIgnoreCase))
+        {
+            customSkinRoot = desiredSkinRoot;
+            ApplySkin(desiredSkin);
+        }
+    }
+
+    private int MapSizeToScale(string size)
+    {
+        return size?.ToLowerInvariant() switch
+        {
+            "small" => 1,
+            "big" => 3,
+            _ => 2
+        };
+    }
+
+    private void PopulateInputDevices()
+    {
+        try
+        {
+            var devices = new List<string> { "Default microphone" };
+            for (var i = 0; i < WaveInEvent.DeviceCount; i++)
+            {
+                var info = WaveInEvent.GetCapabilities(i);
+                var name = string.IsNullOrWhiteSpace(info.ProductName) ? $"Device {i}" : info.ProductName;
+                devices.Add(name);
+            }
+
+            debugState.SetInputDevices(devices);
+        }
+        catch
+        {
+        }
+    }
+
+    private int ResolveMicDeviceIndex(string name)
+    {
+        if (string.IsNullOrWhiteSpace(name) || string.Equals(name, "Default microphone", StringComparison.OrdinalIgnoreCase))
+        {
+            return -1;
+        }
+
+        try
+        {
+            for (var i = 0; i < WaveInEvent.DeviceCount; i++)
+            {
+                var info = WaveInEvent.GetCapabilities(i);
+                var deviceName = string.IsNullOrWhiteSpace(info.ProductName) ? $"Device {i}" : info.ProductName;
+                if (string.Equals(deviceName, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return i;
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return -1;
+    }
+
     private void OpenSettings()
     {
+        SettingsApp.SharedState = debugState;
         DebugUI.DebugHost.OpenSettings();
     }
 
@@ -243,6 +493,7 @@ internal sealed partial class PetForm : Form
             animationTimer.Dispose();
             energyTimer.Stop();
             energyTimer.Dispose();
+            SettingsStorage.Save(debugState);
             skin?.Dispose();
             microphoneListener?.Dispose();
             (soundPlayer as IDisposable)?.Dispose();
@@ -250,6 +501,9 @@ internal sealed partial class PetForm : Form
             trayMenu?.Dispose();
             visibleIcon?.Dispose();
             hiddenIcon?.Dispose();
+            nameOverlay?.Dispose();
+            cursorKnockbackCts?.Cancel();
+            cursorKnockbackCts?.Dispose();
         }
 
         base.Dispose(disposing);

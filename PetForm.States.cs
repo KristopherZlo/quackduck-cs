@@ -133,7 +133,7 @@ internal sealed partial class PetForm
         isSleeping = false;
         targetPoint = PickGroundTarget();
         SetIdleAnimationVariant();
-        idleReleaseTime = DateTime.UtcNow + TimeSpan.FromMilliseconds(random.Next(1200, 3200));
+        idleReleaseTime = DateTime.UtcNow + GetIdleDuration();
         SnapToGround();
         horizontalVelocity = 0;
         verticalVelocity = 0;
@@ -512,6 +512,7 @@ internal sealed partial class PetForm
         var dx = cursor.X - screenX;
         facingRight = dx >= 0;
         horizontalVelocity = Math.Sign(dx) * GroundSpeedBase * RunSpeedMultiplier * DebugSpeedFactor;
+        KnockbackCursor(dx);
         if (IsOnGround())
         {
             SnapToGround();
@@ -747,5 +748,81 @@ internal sealed partial class PetForm
     private void TryPlaySound(string path)
     {
         _ = soundPlayer.PlayAsync(path);
+    }
+
+    private void KnockbackCursor(float attackDx)
+    {
+        try
+        {
+            cursorKnockbackCts?.Cancel();
+            cursorKnockbackCts?.Dispose();
+            cursorKnockbackCts = new CancellationTokenSource();
+            var token = cursorKnockbackCts.Token;
+            var syncContext = SynchronizationContext.Current;
+
+            cursorKnockbackTask = Task.Run(async () =>
+            {
+                var start = Control.MousePosition;
+                var screen = Screen.FromPoint(start).WorkingArea;
+                var direction = Math.Sign(attackDx);
+                if (direction == 0)
+                {
+                    direction = facingRight ? 1 : -1;
+                }
+
+                var scaleFactor = Math.Max(1, scale);
+                var baseDistance = skin is not null ? skin.FrameWidth * scaleFactor : 60;
+                var knockbackDistance = Math.Clamp(baseDistance * 1.5f, 60, 260);
+
+                var px = (double)start.X;
+                var py = (double)start.Y;
+                var vx = direction * knockbackDistance * 0.35;
+                var vy = -Math.Max(6, (skin is not null ? skin.FrameHeight * scaleFactor : 60) * 0.12);
+                const double friction = 0.88;
+                const double verticalFriction = 0.9;
+                const int frameDelayMs = 16;
+                var iterations = 0;
+                const int maxIterations = 50;
+
+                while (!token.IsCancellationRequested && iterations++ < maxIterations)
+                {
+                    px += vx;
+                    py += vy;
+                    vx *= friction;
+                    vy *= verticalFriction;
+
+                    px = Math.Clamp(px, screen.Left, screen.Right - 1);
+                    py = Math.Clamp(py, screen.Top, screen.Bottom - 1);
+
+                    var targetPoint = new Point((int)Math.Round(px), (int)Math.Round(py));
+                    if (syncContext is not null)
+                    {
+                        syncContext.Post(_ => Cursor.Position = targetPoint, null);
+                    }
+                    else
+                    {
+                        Cursor.Position = targetPoint;
+                    }
+
+                    if (Math.Abs(vx) < 0.5 && Math.Abs(vy) < 0.5)
+                    {
+                        break;
+                    }
+
+                    await Task.Delay(frameDelayMs, token).ConfigureAwait(false);
+                }
+            }, token);
+        }
+        catch
+        {
+        }
+    }
+
+    private TimeSpan GetIdleDuration()
+    {
+        var timeoutSeconds = Math.Clamp(debugState.PetTimeoutSeconds, 0.5, 120);
+        var jitter = 0.7 + random.NextDouble() * 0.6; // 0.7 - 1.3
+        var ms = timeoutSeconds * 1000 * jitter;
+        return TimeSpan.FromMilliseconds(ms);
     }
 }

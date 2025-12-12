@@ -5,39 +5,15 @@ namespace QuackDuck;
 
 internal sealed partial class PetForm
 {
-    private float DebugSpeedFactor => Math.Max(0.1f, (float)(debugState?.SpeedMultiplier ?? 1d));
+    private float DebugSpeedFactor => Math.Max(0.1f, (float)(debugState.SpeedMultiplier));
 
     private void HandleDebugControls()
     {
-        if (debugState is null || !debugState.DebugEnabled)
+        ApplyLiveSettingsFromState();
+
+        if (!debugState.DebugEnabled)
         {
             return;
-        }
-
-        var desiredMicEnabled = debugState.MicrophoneEnabled;
-        var micGain = Math.Max(0.1f, (float)debugState.MicrophoneGain);
-        var micThreshold = Math.Clamp((float)debugState.MicrophoneThreshold, 0.001f, 1f);
-        microphoneListener?.SetGain(micGain);
-        microphoneListener?.SetThreshold(micThreshold);
-        if (desiredMicEnabled != microphoneEnabled)
-        {
-            microphoneEnabled = desiredMicEnabled;
-            if (microphoneEnabled)
-            {
-                TryStartMicrophone();
-            }
-            else
-            {
-                StopMicrophone();
-                isHearingSound = false;
-            }
-        }
-
-        if (debugState.Scale != scale)
-        {
-            scale = Math.Max(1, debugState.Scale);
-            ClientSize = new Size(skin.FrameWidth * scale, skin.FrameHeight * scale);
-            KeepPetInBoundsAndApply(workingArea);
         }
 
         if (debugState.ConsumeFlip())
@@ -77,6 +53,19 @@ internal sealed partial class PetForm
             catch (Exception ex)
             {
                 Log($"Force state failed: {ex.Message}");
+            }
+        }
+
+        if (debugState.ConsumeCursorHuntRequest())
+        {
+            try
+            {
+                stateMachine.ForceState("CursorHunt");
+                Log("Force state -> CursorHunt (debug trigger)");
+            }
+            catch (Exception ex)
+            {
+                Log($"Force CursorHunt failed: {ex.Message}");
             }
         }
 

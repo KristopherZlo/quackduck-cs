@@ -32,9 +32,9 @@ internal sealed class PetSkin : IDisposable
     internal int FrameHeight { get; }
     internal IReadOnlyList<string> SoundPaths { get; }
 
-    internal static PetSkin Load(string skinName = "default")
+    internal static PetSkin Load(string skinName = "default", string? customRoot = null)
     {
-        var skinFolder = ResolveSkinPath(skinName);
+        var skinFolder = ResolveSkinPath(skinName, customRoot);
         var configPath = Path.Combine(skinFolder, "config.json");
         if (!File.Exists(configPath))
         {
@@ -203,31 +203,26 @@ internal sealed class PetSkin : IDisposable
         return config;
     }
 
-    private static string ResolveSkinPath(string skinName)
+    private static string ResolveSkinPath(string skinName, string? customRoot)
     {
         var baseDir = AppContext.BaseDirectory;
-        var runtimePath = Path.Combine(baseDir, "assets", "skins", skinName);
-        if (Directory.Exists(runtimePath))
+        var probes = new List<string>();
+        if (!string.IsNullOrWhiteSpace(customRoot))
         {
-            return runtimePath;
+            probes.Add(Path.Combine(customRoot, skinName));
         }
 
-        var devPath = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "assets", "skins", skinName));
-        if (Directory.Exists(devPath))
-        {
-            return devPath;
-        }
+        probes.Add(Path.Combine(baseDir, "assets", "skins", skinName));
+        probes.Add(Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "assets", "skins", skinName)));
+        probes.Add(Path.Combine(baseDir, "READY", skinName));
+        probes.Add(Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "READY", skinName)));
 
-        var readyRuntime = Path.Combine(baseDir, "READY", skinName);
-        if (Directory.Exists(readyRuntime))
+        foreach (var path in probes.Distinct(StringComparer.OrdinalIgnoreCase))
         {
-            return readyRuntime;
-        }
-
-        var readyDev = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "READY", skinName));
-        if (Directory.Exists(readyDev))
-        {
-            return readyDev;
+            if (Directory.Exists(path))
+            {
+                return path;
+            }
         }
 
         throw new DirectoryNotFoundException($"Skin '{skinName}' was not found under assets/skins or READY.");

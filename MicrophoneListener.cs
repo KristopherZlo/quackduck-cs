@@ -19,6 +19,7 @@ internal sealed class MicrophoneListener : IDisposable
     private DateTime lastAboveThreshold = DateTime.MinValue;
     private bool currentlyHearing;
     private float gain = 1f;
+    private int deviceIndex = -1;
 
     internal MicrophoneListener(Action onSoundStarted, Action onSoundStopped, Action<float>? onLevelChanged = null, float threshold = 0.08f, int bufferMilliseconds = 120, TimeSpan? releaseHold = null)
     {
@@ -42,6 +43,16 @@ internal sealed class MicrophoneListener : IDisposable
         threshold = Math.Clamp(value, 0.001f, 1f);
     }
 
+    internal void SetDeviceIndex(int index)
+    {
+        deviceIndex = Math.Max(-1, index);
+        if (IsRunning)
+        {
+            StopInternal();
+            Start();
+        }
+    }
+
     internal void Start()
     {
         if (disposed || capture is not null)
@@ -53,6 +64,7 @@ internal sealed class MicrophoneListener : IDisposable
         {
             capture = new WaveInEvent
             {
+                DeviceNumber = deviceIndex >= 0 ? deviceIndex : 0,
                 WaveFormat = new WaveFormat(16000, 1),
                 BufferMilliseconds = bufferMilliseconds
             };

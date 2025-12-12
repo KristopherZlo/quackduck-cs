@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Windows.Forms;
+using QuackDuck.DebugUI;
 
 namespace QuackDuck;
 
@@ -39,7 +40,7 @@ internal sealed partial class PetForm
         var settingsItem = new ToolStripMenuItem("Settings", null, (_, _) => OpenSettings());
         var updatesItem = new ToolStripMenuItem("Check for updates", null, (_, _) => Log("Update check is not implemented yet."));
         var coffeeItem = new ToolStripMenuItem("Buy me a coffee", null, (_, _) => OpenCoffeeLink());
-        var debugItem = new ToolStripMenuItem("Debug", null, (_, _) => Log("Debug menu item clicked."));
+        var debugItem = new ToolStripMenuItem("Debug", null, (_, _) => DebugHost.Start(debugState));
 
         menu.Items.Add(trayToggleItem);
         menu.Items.Add(settingsItem);
@@ -77,6 +78,7 @@ internal sealed partial class PetForm
         animationTimer.Stop();
         energyTimer.Stop();
         Hide();
+        nameOverlay?.Hide();
         UpdateTrayIcon();
         Log("Pet paused/hidden from tray");
     }
@@ -88,6 +90,7 @@ internal sealed partial class PetForm
         KeepPetInBoundsAndApply(workingArea);
         animationTimer.Start();
         energyTimer.Start();
+        UpdateNameOverlay();
         UpdateTrayIcon();
         Log("Pet resumed/shown from tray");
     }

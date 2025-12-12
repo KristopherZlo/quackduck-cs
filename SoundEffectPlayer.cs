@@ -14,22 +14,33 @@ internal sealed class SoundEffectPlayer : IPetAudioPlayer, IDisposable
 {
     private readonly CancellationTokenSource cancellation = new();
     private bool disposed;
+    private double volume = 1.0;
+
+    public bool Enabled { get; set; } = true;
+
+    public double Volume
+    {
+        get => volume;
+        set => volume = Math.Clamp(value, 0d, 1d);
+    }
 
     public Task PlayAsync(string path)
     {
-        if (disposed || string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+        if (disposed || !Enabled || string.IsNullOrWhiteSpace(path) || !File.Exists(path))
         {
             return Task.CompletedTask;
         }
 
-        return Task.Run(() => PlayInternal(path, cancellation.Token), cancellation.Token);
+        var effectiveVolume = (float)volume;
+        return Task.Run(() => PlayInternal(path, cancellation.Token, effectiveVolume), cancellation.Token);
     }
 
-    private static void PlayInternal(string path, CancellationToken token)
+    private static void PlayInternal(string path, CancellationToken token, float volume)
     {
         try
         {
             using var audioFile = new AudioFileReader(path);
+            audioFile.Volume = volume;
             using var output = new WaveOutEvent();
             output.Init(audioFile);
             output.Play();

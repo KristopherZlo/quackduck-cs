@@ -10,6 +10,7 @@ internal sealed partial class PetForm
         microphoneListener = new MicrophoneListener(NotifySoundStarted, NotifySoundStopped, level => lastMicLevel = level);
         microphoneListener.SetGain((float)(debugState?.MicrophoneGain ?? 1.0));
         microphoneListener.SetThreshold((float)(debugState?.MicrophoneThreshold ?? 0.08));
+        microphoneListener.SetDeviceIndex(selectedMicDeviceIndex);
         TryStartMicrophone();
     }
 
