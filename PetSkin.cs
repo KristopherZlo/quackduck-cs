@@ -42,17 +42,27 @@ internal sealed class PetSkin : IDisposable
         }
 
         var config = ReadConfig(configPath);
+        ValidateConfig(config);
         var sheetPath = Path.Combine(skinFolder, config.Spritesheet);
         if (!File.Exists(sheetPath))
         {
             throw new FileNotFoundException($"Spritesheet '{config.Spritesheet}' not found at {sheetPath}");
         }
 
-        var spriteSheet = new Bitmap(sheetPath);
-        var animations = BuildAnimations(config, spriteSheet.Width, spriteSheet.Height);
-        var soundPaths = BuildSoundPaths(config, skinFolder);
+        Bitmap? spriteSheet = null;
+        try
+        {
+            spriteSheet = new Bitmap(sheetPath);
+            var animations = BuildAnimations(config, spriteSheet.Width, spriteSheet.Height);
+            var soundPaths = BuildSoundPaths(config, skinFolder);
 
-        return new PetSkin(spriteSheet, config.FrameWidth, config.FrameHeight, animations, soundPaths);
+            return new PetSkin(spriteSheet, config.FrameWidth, config.FrameHeight, animations, soundPaths);
+        }
+        catch
+        {
+            spriteSheet?.Dispose();
+            throw;
+        }
     }
 
     internal bool HasAnimation(string name) => animations.ContainsKey(name);
@@ -88,6 +98,11 @@ internal sealed class PetSkin : IDisposable
         var animations = new Dictionary<string, Rectangle[]>(StringComparer.OrdinalIgnoreCase);
         foreach (var (name, frameTokens) in config.Animations)
         {
+            if (frameTokens is null || frameTokens.Length == 0)
+            {
+                throw new InvalidOperationException($"Animation '{name}' must contain at least one frame.");
+            }
+
             var frames = frameTokens.Select(token => ParseFrame(token, config.FrameWidth, config.FrameHeight)).ToArray();
             foreach (var frame in frames)
             {
@@ -101,6 +116,37 @@ internal sealed class PetSkin : IDisposable
         }
 
         return animations;
+    }
+
+    private static void ValidateConfig(SkinConfig config)
+    {
+        if (string.IsNullOrWhiteSpace(config.Spritesheet))
+        {
+            throw new InvalidOperationException("Skin config must specify a spritesheet file name.");
+        }
+
+        if (config.FrameWidth <= 0 || config.FrameHeight <= 0)
+        {
+            throw new InvalidOperationException("Frame width and height must be positive non-zero values.");
+        }
+
+        if (config.Animations.Count == 0)
+        {
+            throw new InvalidOperationException("Skin config must declare at least one animation.");
+        }
+
+        foreach (var (name, frames) in config.Animations)
+        {
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                throw new InvalidOperationException("Animation name cannot be empty.");
+            }
+
+            if (frames is null || frames.Length == 0)
+            {
+                throw new InvalidOperationException($"Animation '{name}' must list at least one frame.");
+            }
+        }
     }
 
     private static IReadOnlyList<string> BuildSoundPaths(SkinConfig config, string skinFolder)
@@ -129,6 +175,11 @@ internal sealed class PetSkin : IDisposable
         if (parts.Length != 2 || !int.TryParse(parts[0], out var row) || !int.TryParse(parts[1], out var column))
         {
             throw new FormatException($"Frame '{token}' must be in 'row:column' format.");
+        }
+
+        if (row < 0 || column < 0)
+        {
+            throw new FormatException($"Frame '{token}' cannot use negative indices.");
         }
 
         return new Rectangle(column * frameWidth, row * frameHeight, frameWidth, frameHeight);
@@ -179,7 +230,7 @@ internal sealed class PetSkin : IDisposable
             return readyDev;
         }
 
-        throw new DirectoryNotFoundException($"Skin '{skinName}' was not found under assets/skins.");
+        throw new DirectoryNotFoundException($"Skin '{skinName}' was not found under assets/skins or READY.");
     }
 
     public void Dispose()
